@@ -26,6 +26,8 @@ final class WindowTracker {
     private(set) var parked: [CGWindowID: CGRect] = [:]
     private var parkedPIDs: [CGWindowID: pid_t] = [:]
     private var focusArmed = Set<CGWindowID>()
+    private var pendingUnpark = Set<CGWindowID>()
+    private var everParked = Set<CGWindowID>()
     // A window we just brought forward; app activation lags, so trust it as the front for a moment.
     private var pendingFront: (id: CGWindowID, until: Date)?
     private let parkedKey = "parked"
@@ -171,6 +173,7 @@ final class WindowTracker {
                 self.scheduleRefresh()
                 return
             }
+            self.everParked.insert(id)
             let successor = self.ordered.compactMap { self.windows[$0] }.first {
                 $0.id != id && $0.pid == pid && !$0.minimized && self.parked[$0.id] == nil
             } ?? self.ordered.compactMap { self.windows[$0] }.first {
@@ -192,12 +195,19 @@ final class WindowTracker {
     }
 
     func unpark(_ id: CGWindowID) {
-        guard let frame = parked[id] else { return }
+        guard let frame = parked[id] else {
+            pendingUnpark.remove(id)
+            return
+        }
         let ax = windows[id]?.ax ?? axWindows(pid: parkedPIDs[id] ?? 0).first { candidate in
             var candidateID: CGWindowID = 0
             return AXWindowID(candidate, &candidateID) == .success && candidateID == id
         }
-        guard let ax, setPosition(ax, frame.origin) else { return }
+        guard let ax, setPosition(ax, frame.origin) else {
+            pendingUnpark.insert(id)
+            return
+        }
+        pendingUnpark.remove(id)
         parked.removeValue(forKey: id)
         parkedPIDs.removeValue(forKey: id)
         focusArmed.remove(id)
@@ -209,8 +219,15 @@ final class WindowTracker {
         for id in Array(parked.keys) { unpark(id) }
     }
 
-    private func axMatch(pid: pid_t, title: String, frame: CGRect, cache: inout [pid_t: [AXUIElement]]) -> AXUIElement? {
+    private func axMatch(pid: pid_t, id: CGWindowID, title: String, frame: CGRect,
+                         cache: inout [pid_t: [AXUIElement]]) -> AXUIElement? {
         if cache[pid] == nil { cache[pid] = axWindows(pid: pid) }
+        // The exact window number first: CGWindowList truncates long titles with "…"
+        // (Chrome's DevTools), so a title comparison alone misses such windows.
+        if let exact = cache[pid]?.first(where: { candidate in
+            var candidateID: CGWindowID = 0
+            return AXWindowID(candidate, &candidateID) == .success && candidateID == id
+        }) { return exact }
         return cache[pid]?.min { a, b in score(a, title: title, frame: frame) < score(b, title: title, frame: frame) }
             .flatMap { score($0, title: title, frame: frame) < 120 ? $0 : nil }
     }
@@ -258,6 +275,7 @@ final class WindowTracker {
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         var found: [CGWindowID: WindowItem] = [:]
         var zOrder: [CGWindowID] = []
+        var visibleParked: [CGWindowID] = []
         var axCache: [pid_t: [AXUIElement]] = [:]
         var activePIDs = Set<pid_t>()
 
@@ -277,32 +295,23 @@ final class WindowTracker {
             guard let app, !app.isHidden else { continue }
             activePIDs.insert(pid)
             observe(pid: pid)
-            let ax = AXIsProcessTrusted() ? axMatch(pid: pid, title: title, frame: rect, cache: &axCache) : nil
+            let ax = AXIsProcessTrusted() ? axMatch(pid: pid, id: id, title: title, frame: rect, cache: &axCache) : nil
             if let ax { observeWindow(ax, pid: pid) }
             found[id] = WindowItem(id: id, pid: pid, title: title.isEmpty ? owner : title,
                                    appName: owner, frame: parked[id] ?? rect, icon: app.icon, ax: ax, minimized: false)
             if parked[id] == nil { zOrder.append(id) }
+            else { visibleParked.append(id) }
         }
 
         // Minimized windows leave CGWindowList. Keep only live AX windows that are still minimized.
         var newlyMinimized: [CGWindowID] = []
-        for (id, old) in windows where found[id] == nil {
+        for (id, old) in windows where found[id] == nil && parked[id] == nil {
             guard let app = NSRunningApplication(processIdentifier: old.pid),
-                  !app.isTerminated, (!app.isHidden || parked[id] != nil) else { continue }
+                  !app.isTerminated, !app.isHidden else { continue }
             if axCache[old.pid] == nil { axCache[old.pid] = axWindows(pid: old.pid) }
-            if let frame = parked[id], let ax = axCache[old.pid]?.first(where: { candidate in
-                var candidateID: CGWindowID = 0
-                return (old.ax.map { CFEqual($0, candidate) } == true)
-                    || (AXWindowID(candidate, &candidateID) == .success && candidateID == id)
-            }) {
-                found[id] = WindowItem(id: id, pid: old.pid, title: old.title, appName: old.appName,
-                                       frame: frame, icon: old.icon, ax: ax, minimized: false)
-                activePIDs.insert(old.pid)
-                continue
-            }
             guard let candidates = axCache[old.pid],
                   let ax = old.ax.flatMap({ previous in candidates.first { CFEqual($0, previous) } })
-                    ?? axMatch(pid: old.pid, title: old.title, frame: old.frame, cache: &axCache),
+                    ?? axMatch(pid: old.pid, id: old.id, title: old.title, frame: old.frame, cache: &axCache),
                   isMinimized(ax) else { continue }
             observe(pid: old.pid)
             observeWindow(ax, pid: old.pid)
@@ -312,13 +321,38 @@ final class WindowTracker {
             activePIDs.insert(old.pid)
         }
 
-        let closedParked = Array(parked.keys).filter { found[$0] == nil }
+        let allWindows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]]
+        let liveIDs = Set((allWindows ?? []).compactMap { entry -> CGWindowID? in
+            (entry[kCGWindowNumber as String] as? NSNumber).map { CGWindowID($0.uint32Value) }
+        })
+        let closedParked = Array(parked.keys).filter { id in
+            guard found[id] == nil else { return false }
+            guard let pid = parkedPIDs[id], let app = NSRunningApplication(processIdentifier: pid),
+                  !app.isTerminated else { return true }
+            return allWindows != nil && !liveIDs.contains(id)
+        }
         for id in closedParked {
             parked.removeValue(forKey: id)
             parkedPIDs.removeValue(forKey: id)
             focusArmed.remove(id)
+            pendingUnpark.remove(id)
+            everParked.remove(id)
         }
         if !closedParked.isEmpty { saveParked() }
+
+        let mainTop = NSScreen.screens.first?.frame.maxY ?? 0
+        for (id, item) in found where everParked.contains(id) && parked[id] == nil && !item.minimized {
+            let center = CGPoint(x: item.frame.midX, y: mainTop - item.frame.midY)
+            guard !NSScreen.screens.contains(where: { $0.frame.contains(center) }),
+                  let screen = NSScreen.screens.first, let ax = item.ax else { continue }
+            let point = CGPoint(x: screen.visibleFrame.minX + 40,
+                                y: mainTop - screen.visibleFrame.maxY + 40)
+            if setPosition(ax, point) {
+                everParked.remove(id)
+                scheduleRefresh()
+            }
+        }
+        if allWindows != nil { everParked.formIntersection(liveIDs) }
 
         removeDeadObservers(activePIDs: activePIDs)
         let oldTopOnScreen = topOnScreen
@@ -331,6 +365,7 @@ final class WindowTracker {
         let oldOrder = ordered
         ordered.removeAll { found[$0] == nil }
         for id in zOrder.reversed() where !ordered.contains(id) { ordered.insert(id, at: 0) }
+        for id in visibleParked.reversed() where !ordered.contains(id) { ordered.insert(id, at: 0) }
 
         let activePID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         var front = zOrder.first { found[$0]?.pid == activePID } ?? zOrder.first
@@ -370,6 +405,7 @@ final class WindowTracker {
             }
         }
         if changed { onChange?() }
+        for id in Array(pendingUnpark) { unpark(id) }
     }
 
     func screen(for item: WindowItem) -> NSScreen? {
