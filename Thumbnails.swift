@@ -18,9 +18,12 @@ final class ThumbnailStore {
             requests.insert(item.id)
             lastRequest[item.id] = Date()
             let id = item.id
+            let ax = item.ax
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 defer { self.requests.remove(id) }
+                // While a window is restoring, CGWindowList already lists it, but this stays true.
+                guard !Self.isMinimized(ax) else { return }
                 do {
                     let available = try await SCShareableContent.excludingDesktopWindows(
                         false, onScreenWindowsOnly: true)
@@ -39,6 +42,10 @@ final class ThumbnailStore {
                     configuration.captureResolution = .best
                     let cgImage = try await SCScreenshotManager.captureImage(
                         contentFilter: filter, configuration: configuration)
+                    // The capture shows the window warped by the minimize animation, and the
+                    // minimized flag turns true only when that ends. So wait, then ask again.
+                    try await Task.sleep(nanoseconds: 700_000_000)
+                    guard !Self.isMinimized(ax) else { return }
                     // A window that hides itself from capture comes back blank: drop any earlier
                     // image, so the panel shows the framed title instead of an empty tile.
                     guard Self.hasVisibleContent(cgImage) else {
@@ -55,6 +62,14 @@ final class ThumbnailStore {
                 }
             }
         }
+    }
+
+    private static func isMinimized(_ window: AXUIElement?) -> Bool {
+        guard let window else { return false }
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &value) == .success
+        else { return false }
+        return value as? Bool == true
     }
 
     private static func hasVisibleContent(_ image: CGImage) -> Bool {
