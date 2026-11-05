@@ -277,6 +277,13 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
             menu.addItem(parent)
         }
         menu.addItem(.separator())
+        menu.addItem(choiceMenu(title: "Количество плиток", choices: DisplaySettings.tileCountChoices,
+                                current: DisplaySettings.maxTiles, label: { "\($0)" },
+                                action: #selector(chooseTileCount(_:))))
+        menu.addItem(choiceMenu(title: "Прозрачность плиток", choices: DisplaySettings.transparencyChoices,
+                                current: DisplaySettings.transparency, label: { $0 == 0 ? "Нет" : "\($0)%" },
+                                action: #selector(chooseTransparency(_:))))
+        menu.addItem(.separator())
         let login = NSMenuItem(title: "Запускать при входе", action: #selector(toggleLogin(_:)), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
@@ -290,6 +297,33 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
         quit.target = self
         menu.addItem(quit)
         statusItem.menu = menu
+    }
+
+    private func choiceMenu(title: String, choices: [Int], current: Int,
+                            label: (Int) -> String, action: Selector) -> NSMenuItem {
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for choice in choices {
+            let item = NSMenuItem(title: label(choice), action: action, keyEquivalent: "")
+            item.target = self
+            item.tag = choice
+            item.state = choice == current ? .on : .off
+            sub.addItem(item)
+        }
+        parent.submenu = sub
+        return parent
+    }
+
+    @objc private func chooseTileCount(_ sender: NSMenuItem) {
+        DisplaySettings.maxTiles = sender.tag
+        updatePanels()
+        rebuildMenu()
+    }
+
+    @objc private func chooseTransparency(_ sender: NSMenuItem) {
+        DisplaySettings.transparency = sender.tag
+        updatePanels()
+        rebuildMenu()
     }
 
     @objc private func chooseSide(_ sender: NSMenuItem) {

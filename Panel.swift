@@ -143,7 +143,7 @@ private final class StripItemView: NSView {
 }
 
 final class StripPanel: NSPanel {
-    static let maxTiles = 5
+    static var maxTiles: Int { DisplaySettings.maxTiles }
     /// How far the tiles turn towards the middle of the screen while the strip is at rest.
     static func tilt(for side: StripSide) -> CGFloat { side == .left ? 0.3 : -0.3 }
     private static let width: CGFloat = 220
@@ -195,6 +195,7 @@ final class StripPanel: NSPanel {
 
     func update(items: [WindowItem], thumbnails: ThumbnailStore,
                 exposed: Bool, visible: Bool) {
+        tilesView.alphaValue = 1 - CGFloat(DisplaySettings.transparency) / 100
         currentItems = Array(items.prefix(Self.maxTiles))
         let images = currentItems.map { thumbnails.image(for: $0.id) }
         let naturalSizes = images.map { image -> CGSize in
