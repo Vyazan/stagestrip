@@ -1,5 +1,15 @@
 import AppKit
 import QuartzCore
+import ScreenCaptureKit
+
+private func averageBrightness(of image: CGImage, in rect: CGRect) -> UInt8? {
+    guard let crop = image.cropping(to: rect),
+          let context = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 1,
+                                  space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+    context.draw(crop, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+    return context.data?.load(as: UInt8.self)
+}
 
 private final class StripItemView: NSView {
     let id: CGWindowID
@@ -7,12 +17,15 @@ private final class StripItemView: NSView {
     private let thumbnailLayer = CALayer()
     private let iconLayer = CALayer()
     private let titleLayer = CATextLayer()
+    private let captionLayer = CATextLayer()
+    private var thumbnail: CGImage?
+    private var backdropBrightness: UInt8?
     private let click: (CGWindowID) -> Void
     private var hovering = false
     private var side: StripSide
     private var transformApplied = false
 
-    init(item: WindowItem, image: NSImage?, side: StripSide,
+    init(item: WindowItem, image: NSImage?, showsCaption: Bool, side: StripSide,
          click: @escaping (CGWindowID) -> Void) {
         id = item.id
         self.side = side
@@ -36,7 +49,12 @@ private final class StripItemView: NSView {
         titleLayer.truncationMode = .end
         titleLayer.isWrapped = true
         contentLayer.addSublayer(titleLayer)
-        update(item: item, image: image)
+        captionLayer.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        captionLayer.fontSize = 11
+        captionLayer.foregroundColor = NSColor.white.cgColor
+        captionLayer.truncationMode = .end
+        contentLayer.addSublayer(captionLayer)
+        update(item: item, image: image, showsCaption: showsCaption)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -50,16 +68,20 @@ private final class StripItemView: NSView {
         thumbnailLayer.frame = contentLayer.bounds
         layoutIcon()
         layoutTitle()
+        layoutCaption()
+        updateCaptionColor()
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         thumbnailLayer.contentsScale = scale
         iconLayer.contentsScale = scale
         titleLayer.contentsScale = scale
+        captionLayer.contentsScale = scale
         CATransaction.commit()
         if !transformApplied { updateTransform(animated: false) }
     }
 
-    func update(item: WindowItem, image: NSImage?) {
-        thumbnailLayer.contents = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    func update(item: WindowItem, image: NSImage?, showsCaption: Bool) {
+        thumbnail = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        thumbnailLayer.contents = thumbnail
         thumbnailLayer.minificationFilter = .trilinear
         iconLayer.contents = item.icon?.cgImage(forProposedRect: nil, context: nil, hints: nil)
         iconLayer.isHidden = item.icon == nil
@@ -72,6 +94,15 @@ private final class StripItemView: NSView {
         contentLayer.borderColor = NSColor(white: 1, alpha: 0.45).cgColor
         contentLayer.borderWidth = framed ? 1 : 0
         layoutTitle()
+        // A card already shows its title inside.
+        let caption = showsCaption && !framed ? item.title : ""
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if captionLayer.string as? String != caption { captionLayer.string = caption }
+        captionLayer.isHidden = caption.isEmpty
+        layoutCaption()
+        updateCaptionColor()
+        CATransaction.commit()
     }
 
     private func layoutTitle() {
@@ -88,12 +119,78 @@ private final class StripItemView: NSView {
         CATransaction.commit()
     }
 
+    private func layoutCaption() {
+        let height: CGFloat = 14
+        switch DisplaySettings.captionPlace {
+        case .aboveTile:
+            let inset: CGFloat = 20
+            captionLayer.alignmentMode = .center
+            captionLayer.frame = CGRect(x: inset, y: bounds.height + 3,
+                                        width: max(bounds.width - inset * 2, 40), height: height)
+        case .besideIcon:
+            // Level with the centre of the icon that overlaps the tile's corner.
+            let iconInset: CGFloat = 28
+            let width = max(bounds.width - iconInset - 6, 40)
+            captionLayer.alignmentMode = side == .right ? .right : .left
+            captionLayer.frame = CGRect(x: side == .right ? bounds.width - iconInset - width : iconInset,
+                                        y: 7 - height / 2, width: width, height: height)
+        }
+    }
+
+    /// The caption has no backing, so it takes dark or white depending on what lies under it:
+    /// the thumbnail beside the icon, whatever is behind the strip above the tile.
+    private func updateCaptionColor() {
+        guard !captionLayer.isHidden, bounds.width > 0, bounds.height > 0 else { return }
+        let brightness: UInt8?
+        switch DisplaySettings.captionPlace {
+        case .aboveTile:
+            brightness = backdropBrightness
+        case .besideIcon:
+            let text = captionTextRect
+            brightness = thumbnail.flatMap { thumbnail in
+                let scaleX = CGFloat(thumbnail.width) / bounds.width
+                let scaleY = CGFloat(thumbnail.height) / bounds.height
+                // CGImage rows run from the top; the tile's coordinates from the bottom.
+                return averageBrightness(of: thumbnail, in: CGRect(
+                    x: text.minX * scaleX, y: (bounds.height - text.maxY) * scaleY,
+                    width: text.width * scaleX, height: text.height * scaleY))
+            }
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        captionLayer.foregroundColor = ((brightness ?? 0) > 128 ? NSColor(white: 0, alpha: 0.82) : NSColor.white).cgColor
+        CATransaction.commit()
+    }
+
+    /// Where the caption's text is, in the tile's coordinates; nil when there is no caption.
+    var visibleCaptionRect: CGRect? { captionLayer.isHidden ? nil : captionTextRect }
+
+    private var captionTextRect: CGRect {
+        let box = captionLayer.frame
+        let text = (captionLayer.string as? String ?? "") as NSString
+        let width = min(box.width, text.size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold)]).width)
+        let x: CGFloat
+        switch captionLayer.alignmentMode {
+        case .center: x = box.midX - width / 2
+        case .right: x = box.maxX - width
+        default: x = box.minX
+        }
+        return CGRect(x: x, y: box.minY, width: width, height: box.height)
+    }
+
+    func setBackdropBrightness(_ brightness: UInt8?) {
+        backdropBrightness = brightness
+        updateCaptionColor()
+    }
+
     func setSide(_ side: StripSide) {
         guard self.side != side else { return }
         self.side = side
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layoutIcon()
+        layoutCaption()
+        updateCaptionColor()
         CATransaction.commit()
     }
 
@@ -167,6 +264,8 @@ final class StripPanel: NSPanel {
     private var frameTarget: CGRect?
     private var exposed = true
     private var transformApplied = false
+    private var backdropRequested = false
+    private var lastBackdropRequest = Date.distantPast
 
     init(screen: NSScreen, side: StripSide, onClick: @escaping (CGWindowID) -> Void) {
         screenRef = screen
@@ -193,7 +292,8 @@ final class StripPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    func update(items: [WindowItem], thumbnails: ThumbnailStore,
+    /// `sharedPIDs`: apps with several windows open, whose tiles are told apart by a caption.
+    func update(items: [WindowItem], sharedPIDs: Set<pid_t>, thumbnails: ThumbnailStore,
                 exposed: Bool, visible: Bool) {
         tilesView.alphaValue = 1 - CGFloat(DisplaySettings.transparency) / 100
         currentItems = Array(items.prefix(Self.maxTiles))
@@ -227,9 +327,10 @@ final class StripPanel: NSPanel {
             let row: StripItemView
             if let existing = rows[item.id] {
                 row = existing
-                row.update(item: item, image: image)
+                row.update(item: item, image: image, showsCaption: sharedPIDs.contains(item.pid))
             } else {
-                row = StripItemView(item: item, image: image, side: side, click: click)
+                row = StripItemView(item: item, image: image, showsCaption: sharedPIDs.contains(item.pid),
+                                    side: side, click: click)
                 rows[item.id] = row
                 tilesView.addSubview(row)
             }
@@ -250,6 +351,46 @@ final class StripPanel: NSPanel {
             }
         }
         setPresentation(exposed: exposed, visible: visible)
+        if visible { refreshBackdrop() }
+    }
+
+    /// Captions above the tiles lie on whatever is behind the strip, so that gets sampled,
+    /// at low resolution and without our own windows.
+    private func refreshBackdrop() {
+        guard DisplaySettings.captionPlace == .aboveTile, side != .off, !backdropRequested,
+              Date().timeIntervalSince(lastBackdropRequest) >= 2,
+              rows.values.contains(where: { $0.visibleCaptionRect != nil }),
+              let number = screenRef.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        else { return }
+        backdropRequested = true
+        lastBackdropRequest = Date()
+        let area = restingFrame, screen = screenRef.frame
+        Task { @MainActor [weak self] in
+            defer { self?.backdropRequested = false }
+            guard let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
+                  let display = content.displays.first(where: { $0.displayID == number.uint32Value })
+            else { return }
+            let own = content.applications.filter { $0.processID == getpid() }
+            let configuration = SCStreamConfiguration()
+            configuration.sourceRect = CGRect(x: area.minX - screen.minX, y: screen.maxY - area.maxY,
+                                              width: area.width, height: area.height)
+            configuration.width = max(1, Int(area.width))
+            configuration.height = max(1, Int(area.height))
+            configuration.showsCursor = false
+            guard let image = try? await SCScreenshotManager.captureImage(
+                contentFilter: SCContentFilter(display: display, excludingApplications: own, exceptingWindows: []),
+                configuration: configuration), let self else { return }
+            for (id, row) in self.rows {
+                guard let caption = row.visibleCaptionRect, let target = self.rowTargets[id] else { continue }
+                // Panel coordinates run from the bottom, the image's rows from the top.
+                let inPanel = caption.offsetBy(dx: target.minX + self.tilesView.frame.minX,
+                                               dy: target.minY + self.tilesView.frame.minY)
+                let scaleX = CGFloat(image.width) / area.width, scaleY = CGFloat(image.height) / area.height
+                row.setBackdropBrightness(averageBrightness(of: image, in: CGRect(
+                    x: inPanel.minX * scaleX, y: (area.height - inPanel.maxY) * scaleY,
+                    width: inPanel.width * scaleX, height: inPanel.height * scaleY)))
+            }
+        }
     }
 
     func setPresentation(exposed: Bool, visible: Bool) {

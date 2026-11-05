@@ -5,6 +5,17 @@ enum StripSide: String {
     case left, right, off
 }
 
+enum CaptionPlace: Int, CaseIterable {
+    case aboveTile, besideIcon
+
+    var title: String {
+        switch self {
+        case .aboveTile: return "Над плиткой"
+        case .besideIcon: return "Рядом со значком"
+        }
+    }
+}
+
 enum DisplaySettings {
     static func key(for screen: NSScreen) -> String {
         guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
@@ -31,6 +42,12 @@ enum DisplaySettings {
             return min(max(saved, tileCountChoices[0]), tileCountChoices[tileCountChoices.count - 1])
         }
         set { UserDefaults.standard.set(newValue, forKey: "maxTiles") }
+    }
+
+    /// Where the title goes on the tiles of an app with several windows open.
+    static var captionPlace: CaptionPlace {
+        get { CaptionPlace(rawValue: UserDefaults.standard.integer(forKey: "captionPlace")) ?? .aboveTile }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "captionPlace") }
     }
 
     /// Percent; 0 means fully opaque tiles.

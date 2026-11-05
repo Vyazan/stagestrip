@@ -158,6 +158,8 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
     }
 
     private func updatePanels() {
+        let sharedPIDs = Set(Dictionary(grouping: tracker.windows.values, by: \.pid)
+            .filter { $0.value.count > 1 }.keys)
         for screen in NSScreen.screens {
             let key = DisplaySettings.key(for: screen)
             guard var state = panels[key] else { continue }
@@ -165,7 +167,7 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
             state.items = tracker.recent(on: screen)
             state.blocked = tracker.stripIsBlocked(on: screen, side: side)
             state.fullScreen = tracker.isFullScreen(on: screen)
-            state.panel.update(items: state.items, thumbnails: thumbnails, exposed: state.exposed,
+            state.panel.update(items: state.items, sharedPIDs: sharedPIDs, thumbnails: thumbnails, exposed: state.exposed,
                                visible: side != .off && !state.fullScreen && !state.items.isEmpty)
             panels[key] = state
         }
@@ -283,6 +285,10 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
         menu.addItem(choiceMenu(title: "Прозрачность плиток", choices: DisplaySettings.transparencyChoices,
                                 current: DisplaySettings.transparency, label: { $0 == 0 ? "Нет" : "\($0)%" },
                                 action: #selector(chooseTransparency(_:))))
+        menu.addItem(choiceMenu(title: "Подпись плитки", choices: CaptionPlace.allCases.map(\.rawValue),
+                                current: DisplaySettings.captionPlace.rawValue,
+                                label: { CaptionPlace(rawValue: $0)?.title ?? "" },
+                                action: #selector(chooseCaptionPlace(_:))))
         menu.addItem(.separator())
         let login = NSMenuItem(title: "Запускать при входе", action: #selector(toggleLogin(_:)), keyEquivalent: "")
         login.target = self
@@ -322,6 +328,12 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
 
     @objc private func chooseTransparency(_ sender: NSMenuItem) {
         DisplaySettings.transparency = sender.tag
+        updatePanels()
+        rebuildMenu()
+    }
+
+    @objc private func chooseCaptionPlace(_ sender: NSMenuItem) {
+        DisplaySettings.captionPlace = CaptionPlace(rawValue: sender.tag) ?? .aboveTile
         updatePanels()
         rebuildMenu()
     }
