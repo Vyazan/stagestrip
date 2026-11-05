@@ -305,7 +305,7 @@ final class StripPanel: NSPanel {
         tilesView.alphaValue = 1 - CGFloat(DisplaySettings.transparency) / 100
         currentItems = Array(items.prefix(Self.maxTiles))
         let images = currentItems.map { thumbnails.image(for: $0.id) }
-        // A caption above or below a tile gets room of its own: the tile gives up that much size.
+        // A caption above or below a tile gets room of its own, added to the strip's height.
         let place = DisplaySettings.captionPlace
         let captionRoom: [CGFloat] = zip(currentItems, images).map { item, image in
             place != .besideIcon && image != nil && sharedPIDs.contains(item.pid) ? Self.captionSpace : 0
@@ -314,7 +314,7 @@ final class StripPanel: NSPanel {
             guard let image = images[index], image.size.width > 0, image.size.height > 0 else {
                 return CGSize(width: Self.tileSize, height: Self.fallbackHeight)
             }
-            let scale = (Self.tileSize - captionRoom[index]) / max(image.size.width, image.size.height)
+            let scale = Self.tileSize / max(image.size.width, image.size.height)
             return CGSize(width: image.size.width * scale, height: image.size.height * scale)
         }
         let gaps = CGFloat(currentItems.count) * Self.rowGap + 6 + captionRoom.reduce(0, +)
