@@ -39,10 +39,11 @@ final class ThumbnailStore {
                     configuration.captureResolution = .best
                     let cgImage = try await SCScreenshotManager.captureImage(
                         contentFilter: filter, configuration: configuration)
-                    // A window that hides itself from capture comes back blank: keep the last good
-                    // image if there is one, or the panel shows the app icon instead.
+                    // A window that hides itself from capture comes back blank: drop any earlier
+                    // image, so the panel shows the framed title instead of an empty tile.
                     guard Self.hasVisibleContent(cgImage) else {
                         self.withoutThumbnail.insert(id)
+                        if self.images.removeValue(forKey: id) != nil { self.onChange?() }
                         return
                     }
                     self.withoutThumbnail.remove(id)
@@ -81,7 +82,8 @@ final class ThumbnailStore {
                 maximum[channel] = max(maximum[channel], value)
             }
         }
-        guard visiblePixels > 0 else { return false }
+        // A mostly transparent capture is blank too, even if a few pixels got through.
+        guard visiblePixels * 2 >= side * side else { return false }
         // Only all-black counts as blank: an empty dark window is still a window to show.
         return !maximum.allSatisfy { $0 <= 12 }
     }
