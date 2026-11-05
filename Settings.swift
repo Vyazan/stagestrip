@@ -6,12 +6,13 @@ enum StripSide: String {
 }
 
 enum CaptionPlace: Int, CaseIterable {
-    case aboveTile, besideIcon
+    case aboveTile, besideIcon, belowTile
 
     var title: String {
         switch self {
         case .aboveTile: return "Над плиткой"
         case .besideIcon: return "Рядом со значком"
+        case .belowTile: return "Под плиткой"
         }
     }
 }

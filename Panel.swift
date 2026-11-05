@@ -127,6 +127,12 @@ private final class StripItemView: NSView {
             captionLayer.alignmentMode = .center
             captionLayer.frame = CGRect(x: inset, y: bounds.height + 3,
                                         width: max(bounds.width - inset * 2, 40), height: height)
+        case .belowTile:
+            // Clear of the icon, which hangs below the tile's corner.
+            let inset: CGFloat = 28
+            captionLayer.alignmentMode = .center
+            captionLayer.frame = CGRect(x: inset, y: -height - 3,
+                                        width: max(bounds.width - inset * 2, 40), height: height)
         case .besideIcon:
             // Level with the centre of the icon that overlaps the tile's corner.
             let iconInset: CGFloat = 28
@@ -138,12 +144,12 @@ private final class StripItemView: NSView {
     }
 
     /// The caption has no backing, so it takes dark or white depending on what lies under it:
-    /// the thumbnail beside the icon, whatever is behind the strip above the tile.
+    /// the thumbnail beside the icon, whatever is behind the strip above or below the tile.
     private func updateCaptionColor() {
         guard !captionLayer.isHidden, bounds.width > 0, bounds.height > 0 else { return }
         let brightness: UInt8?
         switch DisplaySettings.captionPlace {
-        case .aboveTile:
+        case .aboveTile, .belowTile:
             brightness = backdropBrightness
         case .besideIcon:
             let text = captionTextRect
@@ -248,6 +254,7 @@ final class StripPanel: NSPanel {
     private static let tileSize: CGFloat = 160
     private static let fallbackHeight: CGFloat = 88
     private static let rowGap: CGFloat = 26
+    private static let captionSpace: CGFloat = 17
     private let click: (CGWindowID) -> Void
     private let tilesView = NSView(frame: .zero)
     private var rows: [CGWindowID: StripItemView] = [:]
@@ -298,14 +305,19 @@ final class StripPanel: NSPanel {
         tilesView.alphaValue = 1 - CGFloat(DisplaySettings.transparency) / 100
         currentItems = Array(items.prefix(Self.maxTiles))
         let images = currentItems.map { thumbnails.image(for: $0.id) }
-        let naturalSizes = images.map { image -> CGSize in
-            guard let image, image.size.width > 0, image.size.height > 0 else {
+        // A caption above or below a tile gets room of its own: the tile gives up that much size.
+        let place = DisplaySettings.captionPlace
+        let captionRoom: [CGFloat] = zip(currentItems, images).map { item, image in
+            place != .besideIcon && image != nil && sharedPIDs.contains(item.pid) ? Self.captionSpace : 0
+        }
+        let naturalSizes = images.indices.map { index -> CGSize in
+            guard let image = images[index], image.size.width > 0, image.size.height > 0 else {
                 return CGSize(width: Self.tileSize, height: Self.fallbackHeight)
             }
-            let scale = Self.tileSize / max(image.size.width, image.size.height)
+            let scale = (Self.tileSize - captionRoom[index]) / max(image.size.width, image.size.height)
             return CGSize(width: image.size.width * scale, height: image.size.height * scale)
         }
-        let gaps = CGFloat(currentItems.count) * Self.rowGap + 6
+        let gaps = CGFloat(currentItems.count) * Self.rowGap + 6 + captionRoom.reduce(0, +)
         // Reserve space for the shared perspective and the hover scale.
         let available = max(1, (screenRef.visibleFrame.height - 12) / 1.16 - gaps)
         let scale = min(1, available / max(1, naturalSizes.reduce(CGFloat(0)) { $0 + $1.height }))
@@ -335,11 +347,13 @@ final class StripPanel: NSPanel {
                 tilesView.addSubview(row)
             }
             let rowHeight = rowHeights[index]
+            if place == .aboveTile { top -= captionRoom[index] }
             top -= rowHeight
             let rowWidth = naturalSizes[index].width * scale
             let target = CGRect(x: side == .right ? Self.stripWidth - rowWidth : 0, y: top,
                                 width: rowWidth, height: rowHeight)
             top -= Self.rowGap
+            if place == .belowTile { top -= captionRoom[index] }
             rowTargets[item.id] = target
             row.isHidden = hiddenTiles.contains(item.id)
             if row.frame != target {
@@ -354,10 +368,10 @@ final class StripPanel: NSPanel {
         if visible { refreshBackdrop() }
     }
 
-    /// Captions above the tiles lie on whatever is behind the strip, so that gets sampled,
+    /// Captions outside the tiles lie on whatever is behind the strip, so that gets sampled,
     /// at low resolution and without our own windows.
     private func refreshBackdrop() {
-        guard DisplaySettings.captionPlace == .aboveTile, side != .off, !backdropRequested,
+        guard DisplaySettings.captionPlace != .besideIcon, side != .off, !backdropRequested,
               Date().timeIntervalSince(lastBackdropRequest) >= 2,
               rows.values.contains(where: { $0.visibleCaptionRect != nil }),
               let number = screenRef.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber

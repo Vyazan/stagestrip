@@ -285,7 +285,7 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
         menu.addItem(choiceMenu(title: "Прозрачность плиток", choices: DisplaySettings.transparencyChoices,
                                 current: DisplaySettings.transparency, label: { $0 == 0 ? "Нет" : "\($0)%" },
                                 action: #selector(chooseTransparency(_:))))
-        menu.addItem(choiceMenu(title: "Подпись плитки", choices: CaptionPlace.allCases.map(\.rawValue),
+        menu.addItem(choiceMenu(title: "Подпись при нескольких окнах приложения", choices: CaptionPlace.allCases.map(\.rawValue),
                                 current: DisplaySettings.captionPlace.rawValue,
                                 label: { CaptionPlace(rawValue: $0)?.title ?? "" },
                                 action: #selector(chooseCaptionPlace(_:))))
