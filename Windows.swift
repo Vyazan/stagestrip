@@ -296,6 +296,8 @@ final class WindowTracker {
             activePIDs.insert(pid)
             observe(pid: pid)
             let ax = AXIsProcessTrusted() ? axMatch(pid: pid, id: id, title: title, frame: rect, cache: &axCache) : nil
+            // Pop-ups such as Chrome's downloads bubble are layer 0 too; only their subrole gives them away.
+            if let ax, parked[id] == nil, attribute(ax, kAXSubroleAttribute) as? String == "AXUnknown" { continue }
             if let ax { observeWindow(ax, pid: pid) }
             found[id] = WindowItem(id: id, pid: pid, title: title.isEmpty ? owner : title,
                                    appName: owner, frame: parked[id] ?? rect, icon: app.icon, ax: ax, minimized: false)

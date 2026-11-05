@@ -54,8 +54,9 @@ final class ThumbnailStore {
                         return
                     }
                     self.withoutThumbnail.remove(id)
-                    self.images[id] = NSImage(cgImage: cgImage,
-                                              size: NSSize(width: cgImage.width, height: cgImage.height))
+                    let trimmed = Self.trimmingTransparentEdges(of: cgImage)
+                    self.images[id] = NSImage(cgImage: trimmed,
+                                              size: NSSize(width: trimmed.width, height: trimmed.height))
                     self.onChange?()
                 } catch {
                     // Screen Recording may be denied. The panel displays the app icon and title.
@@ -70,6 +71,47 @@ final class ThumbnailStore {
         guard AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &value) == .success
         else { return false }
         return value as? Bool == true
+    }
+
+    /// A window can paint only part of its area. The tile takes its shape from the image, so empty
+    /// margins would leave the tile's icon and caption far from the visible picture.
+    static func trimmingTransparentEdges(of image: CGImage) -> CGImage {
+        let scale = min(1, 256 / CGFloat(max(image.width, image.height)))
+        let width = max(1, Int(CGFloat(image.width) * scale))
+        let height = max(1, Int(CGFloat(image.height) * scale))
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                              | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard rendered else { return image }
+
+        var rowCounts = [Int](repeating: 0, count: height)
+        var columnCounts = [Int](repeating: 0, count: width)
+        for y in 0..<height {
+            for x in 0..<width where pixels[(y * width + x) * 4 + 3] > 64 {
+                rowCounts[y] += 1
+                columnCounts[x] += 1
+            }
+        }
+        // A stray pixel doesn't make a line content; rounded corners don't make one empty.
+        guard let top = rowCounts.firstIndex(where: { $0 * 10 >= width }),
+              let bottom = rowCounts.lastIndex(where: { $0 * 10 >= width }),
+              let left = columnCounts.firstIndex(where: { $0 * 10 >= height }),
+              let right = columnCounts.lastIndex(where: { $0 * 10 >= height }) else { return image }
+        let keptWidth = right - left + 1, keptHeight = bottom - top + 1
+        // An ordinary window keeps its exact image, which also fills it during the flight.
+        guard keptWidth * 100 < width * 97 || keptHeight * 100 < height * 97 else { return image }
+        let toImageX = CGFloat(image.width) / CGFloat(width)
+        let toImageY = CGFloat(image.height) / CGFloat(height)
+        return image.cropping(to: CGRect(x: CGFloat(left) * toImageX, y: CGFloat(top) * toImageY,
+                                         width: CGFloat(keptWidth) * toImageX,
+                                         height: CGFloat(keptHeight) * toImageY).integral) ?? image
     }
 
     private static func hasVisibleContent(_ image: CGImage) -> Bool {
