@@ -162,7 +162,7 @@ final class WindowTracker {
         let rightTaken = NSScreen.screens.contains { $0 != screen && abs($0.frame.minX - screen.frame.maxX) < 2 }
         let offscreen = CGPoint(x: rightTaken ? screen.frame.minX - frame.width + 1 : screen.frame.maxX - 1,
                                 y: quartzBottom - 1)
-        zoom.zoom(image: image, icon: item.icon, from: start, to: target(),
+        zoom.zoom(image: image, icon: item.icon, title: item.title, from: start, to: target(),
                   tilt: StripPanel.tilt(for: DisplaySettings.side(for: screen)),
                   perspective: { perspective(screen) }, shown: { [weak self] in
             guard let self else { return }

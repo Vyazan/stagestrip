@@ -138,7 +138,7 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
                         let panel = self.panels[key]?.panel
                         // The tile itself opens up into the window: the image starts in the
                         // tile's perspective and the tile is gone while it flies.
-                        self.zoomOverlay.zoom(image: self.thumbnails.image(for: id), icon: icon,
+                        self.zoomOverlay.zoom(image: self.thumbnails.image(for: id), icon: icon, title: item.title,
                                               from: startRect, to: endRect,
                                               startTransform: panel?.landingTransform(for: startRect)) { [weak self] in
                             self?.tracker.activate(id)

@@ -5,7 +5,7 @@ final class ZoomOverlay {
     private var activePanel: NSPanel?
     private var generation = 0
 
-    func zoom(image: NSImage?, icon: NSImage?, from startRect: CGRect, to endRect: CGRect,
+    func zoom(image: NSImage?, icon: NSImage?, title: String, from startRect: CGRect, to endRect: CGRect,
               tilt: CGFloat = 0, startTransform: CATransform3D? = nil, perspective: (() -> (pivot: CGPoint, angle: CGFloat)?)? = nil, shown: (() -> Void)? = nil, retarget: (() -> CGRect?)? = nil,
               completion: @escaping () -> Void) {
         generation += 1
@@ -13,16 +13,10 @@ final class ZoomOverlay {
         activePanel?.orderOut(nil)
         activePanel = nil
 
-        guard let displayedImage = image ?? icon else { shown?(); completion(); return }
-        let iconOnly = image == nil
-        let landing = { (end: CGRect) in
-            iconOnly ? CGRect(x: end.midX - 32, y: end.midY - 32, width: 64, height: 64) : end
-        }
-
         // Animating a freshly created window's frame jumps straight to the end,
         // so the panel covers every screen and only its layer moves; that also lets
         // the target change after the panel is up.
-        let area = NSScreen.screens.reduce(startRect.union(landing(endRect))) { $0.union($1.frame) }
+        let area = NSScreen.screens.reduce(startRect.union(endRect)) { $0.union($1.frame) }
         let local = { (r: CGRect) in r.offsetBy(dx: -area.minX, dy: -area.minY) }
         let panel = NSPanel(contentRect: area,
                             styleMask: [.borderless, .nonactivatingPanel],
@@ -40,8 +34,15 @@ final class ZoomOverlay {
 
         let imageLayer = CALayer()
         imageLayer.frame = CGRect(origin: .zero, size: startRect.size)
+        // A window that can't be captured flies as the framed title its tile shows.
+        let displayedImage = image ?? Self.titleImage(title, between: startRect.size, and: endRect.size)
         imageLayer.contents = displayedImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        imageLayer.contentsGravity = iconOnly ? .resizeAspect : .resize
+        imageLayer.contentsGravity = .resize
+        if image == nil {
+            imageLayer.backgroundColor = NSColor(white: 0.12, alpha: 0.85).cgColor
+            imageLayer.borderColor = NSColor(white: 1, alpha: 0.45).cgColor
+            imageLayer.borderWidth = 1
+        }
         imageLayer.cornerRadius = 9
         imageLayer.masksToBounds = true
 
@@ -59,7 +60,7 @@ final class ZoomOverlay {
         // Going into the strip, the app icon shows up under the middle of the window and slides
         // to its corner on the tile.
         let badgeSize: CGFloat = 34
-        let badge: CALayer? = tilt == 0 || iconOnly ? nil : icon.map { icon in
+        let badge: CALayer? = tilt == 0 ? nil : icon.map { icon in
             let layer = CALayer()
             layer.contents = icon.cgImage(forProposedRect: nil, context: nil, hints: nil)
             layer.contentsGravity = .resizeAspect
@@ -144,7 +145,7 @@ final class ZoomOverlay {
         // strong perspective early on, easing back to the tile's own tilt as it lands.
         let duration: CFTimeInterval = tilt == 0 ? 0.5 : 0.55
         let animate = {
-            var destination = landing(retarget?() ?? endRect)
+            var destination = retarget?() ?? endRect
             move(destination, duration, CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1))
             if let startTransform {
                 CATransaction.begin()
@@ -234,8 +235,7 @@ final class ZoomOverlay {
             // The strip may still be rebuilding as focus moves on; steer to where the tile ends up.
             if let retarget {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    guard self.generation == currentGeneration, let end = retarget() else { return }
-                    let corrected = landing(end)
+                    guard self.generation == currentGeneration, let corrected = retarget() else { return }
                     let target = perspective?()
                     let correctedLanding = turned(target?.angle ?? tilt, target.map {
                         CGPoint(x: $0.pivot.x - corrected.midX, y: $0.pivot.y - corrected.midY) } ?? .zero)
@@ -253,7 +253,10 @@ final class ZoomOverlay {
                     }
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: finish)
+            // The curve has covered about 95% of the way by half time. A title card has no content
+            // to show, so the window takes over there rather than leaving the user waiting for it.
+            let handover = image == nil && tilt == 0 ? duration / 2 : duration
+            DispatchQueue.main.asyncAfter(deadline: .now() + handover, execute: finish)
         }
         guard let shown else { animate(); return }
         // The image must be on screen before the window leaves, and the window gone before the image moves.
@@ -262,6 +265,30 @@ final class ZoomOverlay {
             guard let self, self.generation == currentGeneration else { return }
             shown()
             animate()
+        }
+    }
+
+    /// The tile's title at window size, so the text lands exactly as the tile draws it (StripItemView).
+    private static func titleImage(_ title: String, between a: CGSize, and b: CGSize) -> NSImage {
+        let large = a.width >= b.width ? a : b
+        let zoom = large.width / max(min(a.width, b.width), 1)
+        return NSImage(size: large, flipped: false) { bounds in
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11 * zoom, weight: .medium),
+                .foregroundColor: NSColor.white,
+                .paragraphStyle: paragraph
+            ]
+            let width = max(0, bounds.width - 32 * zoom)
+            let options: NSString.DrawingOptions = [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine]
+            let text = title as NSString
+            let height = min(36 * zoom, ceil(text.boundingRect(
+                with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                options: options, attributes: attributes).height))
+            text.draw(with: CGRect(x: 16 * zoom, y: (bounds.height - height) / 2, width: width, height: height),
+                      options: options, attributes: attributes)
+            return true
         }
     }
 }
