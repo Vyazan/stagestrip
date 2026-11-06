@@ -259,21 +259,30 @@ private final class StripItemView: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds,
-                                       options: [.mouseEnteredAndExited, .activeAlways],
+        // inVisibleRect keeps the area on the tile while its frame animates.
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect],
                                        owner: self, userInfo: nil))
     }
 
-    override func mouseEntered(with event: NSEvent) {
-        hovering = true
+    private func setHovering(_ value: Bool) {
+        guard value != hovering else { return }
+        hovering = value
         updatePinVisibility()
         updateTransform(animated: true)
     }
 
-    override func mouseExited(with event: NSEvent) {
-        hovering = false
-        updatePinVisibility()
-        updateTransform(animated: true)
+    override func mouseEntered(with event: NSEvent) { beginHover() }
+    // A fast sweep can lose an enter or exit event; movement over the tile settles it.
+    override func mouseMoved(with event: NSEvent) { if !hovering { beginHover() } }
+    override func mouseExited(with event: NSEvent) { setHovering(false) }
+
+    private func beginHover() {
+        // Only one tile is under the pointer, so any other one still hovering missed its exit.
+        for case let other as StripItemView in superview?.subviews ?? [] where other !== self {
+            other.setHovering(false)
+        }
+        setHovering(true)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -329,6 +338,7 @@ final class StripPanel: NSPanel {
         hasShadow = false
         hidesOnDeactivate = false
         isMovable = false
+        acceptsMouseMovedEvents = true
         contentView?.wantsLayer = true
         contentView?.layer?.backgroundColor = NSColor.clear.cgColor
         tilesView.wantsLayer = true
