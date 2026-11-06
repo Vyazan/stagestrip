@@ -21,9 +21,13 @@ private final class StripItemView: NSView {
     private var thumbnail: CGImage?
     private var backdropBrightness: UInt8?
     private let click: (CGWindowID) -> Void
+    private let pinLayer = CALayer()
+    private var pinned = false
+    var pinClick: ((CGWindowID) -> Void)?
     private var hovering = false
     private var side: StripSide
     private var transformApplied = false
+    private static let pinSize: CGFloat = 22
 
     init(item: WindowItem, image: NSImage?, showsCaption: Bool, side: StripSide,
          click: @escaping (CGWindowID) -> Void) {
@@ -54,7 +58,34 @@ private final class StripItemView: NSView {
         captionLayer.foregroundColor = NSColor.white.cgColor
         captionLayer.truncationMode = .end
         contentLayer.addSublayer(captionLayer)
+        pinLayer.cornerRadius = Self.pinSize / 2
+        pinLayer.backgroundColor = NSColor(white: 0, alpha: 0.55).cgColor
+        pinLayer.contentsGravity = .center
+        pinLayer.isHidden = true
+        contentLayer.addSublayer(pinLayer)
         update(item: item, image: image, showsCaption: showsCaption)
+    }
+
+    func setPinned(_ value: Bool) {
+        guard value != pinned || pinLayer.contents == nil else { return }
+        pinned = value
+        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+        let symbol = NSImage(systemSymbolName: value ? "pin.fill" : "pin", accessibilityDescription: nil)?
+            .withSymbolConfiguration(config)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pinLayer.contents = symbol
+        updatePinVisibility()
+        CATransaction.commit()
+    }
+
+    private func updatePinVisibility() {
+        pinLayer.isHidden = !(pinned || hovering)
+    }
+
+    private var pinRect: CGRect {
+        CGRect(x: 5, y: bounds.height - Self.pinSize - 5, width: Self.pinSize, height: Self.pinSize)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -67,10 +98,12 @@ private final class StripItemView: NSView {
         contentLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
         thumbnailLayer.frame = contentLayer.bounds
         layoutIcon()
+        pinLayer.frame = pinRect
         layoutTitle()
         layoutCaption()
         updateCaptionColor()
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        pinLayer.contentsScale = scale
         thumbnailLayer.contentsScale = scale
         iconLayer.contentsScale = scale
         titleLayer.contentsScale = scale
@@ -233,16 +266,22 @@ private final class StripItemView: NSView {
 
     override func mouseEntered(with event: NSEvent) {
         hovering = true
+        updatePinVisibility()
         updateTransform(animated: true)
     }
 
     override func mouseExited(with event: NSEvent) {
         hovering = false
+        updatePinVisibility()
         updateTransform(animated: true)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func mouseDown(with event: NSEvent) { click(id) }
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        // A little slack around the badge, so a near miss doesn't switch windows.
+        if let pinClick, pinRect.insetBy(dx: -4, dy: -4).contains(point) { pinClick(id) } else { click(id) }
+    }
 }
 
 final class StripPanel: NSPanel {
@@ -256,6 +295,8 @@ final class StripPanel: NSPanel {
     private static let rowGap: CGFloat = 26
     private static let captionSpace: CGFloat = 17
     private let click: (CGWindowID) -> Void
+    /// Pin badge clicked: the window and the slot its tile is in.
+    var onPin: ((CGWindowID, Int) -> Void)?
     private let tilesView = NSView(frame: .zero)
     private var rows: [CGWindowID: StripItemView] = [:]
     private var screenRef: NSScreen
@@ -300,8 +341,8 @@ final class StripPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     /// `sharedPIDs`: apps with several windows open, whose tiles are told apart by a caption.
-    func update(items: [WindowItem], sharedPIDs: Set<pid_t>, thumbnails: ThumbnailStore,
-                exposed: Bool, visible: Bool) {
+    func update(items: [WindowItem], sharedPIDs: Set<pid_t>, pinned: Set<CGWindowID> = [],
+                thumbnails: ThumbnailStore, exposed: Bool, visible: Bool) {
         tilesView.alphaValue = 1 - CGFloat(DisplaySettings.transparency) / 100
         currentItems = Array(items.prefix(Self.maxTiles))
         let images = currentItems.map { thumbnails.image(for: $0.id) }
@@ -345,6 +386,11 @@ final class StripPanel: NSPanel {
                                     side: side, click: click)
                 rows[item.id] = row
                 tilesView.addSubview(row)
+            }
+            row.setPinned(pinned.contains(item.id))
+            row.pinClick = { [weak self] id in
+                guard let self, let slot = self.currentItems.firstIndex(where: { $0.id == id }) else { return }
+                self.onPin?(id, slot)
             }
             let rowHeight = rowHeights[index]
             if place == .aboveTile { top -= captionRoom[index] }

@@ -150,6 +150,7 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
                         self.tracker.activate(id)
                     }
                 }
+                panel.onPin = { [weak self] id, slot in self?.tracker.togglePin(id, slot: slot) }
                 panel.setFrameForScreen(screen: screen, side: DisplaySettings.side(for: screen), shown: false, animated: false)
                 panels[key] = PanelState(panel: panel)
             }
@@ -167,7 +168,8 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
             state.items = tracker.recent(on: screen)
             state.blocked = tracker.stripIsBlocked(on: screen, side: side)
             state.fullScreen = tracker.isFullScreen(on: screen)
-            state.panel.update(items: state.items, sharedPIDs: sharedPIDs, thumbnails: thumbnails, exposed: state.exposed,
+            state.panel.update(items: state.items, sharedPIDs: sharedPIDs, pinned: Set(tracker.pinned.keys),
+                               thumbnails: thumbnails, exposed: state.exposed,
                                visible: side != .off && !state.fullScreen && !state.items.isEmpty)
             panels[key] = state
         }

@@ -31,6 +31,9 @@ final class WindowTracker {
     // A window we just brought forward; app activation lags, so trust it as the front for a moment.
     private var pendingFront: (id: CGWindowID, until: Date)?
     private let parkedKey = "parked"
+    /// Windows the user pinned to a strip slot (0 is the top tile); the rest flow around them.
+    private(set) var pinned: [CGWindowID: Int] = [:]
+    private let pinnedKey = "pinned"
     private let systemOwners: Set<String> = ["Dock", "WindowServer", "Window Server", "Control Center", "Notification Center", "NotificationCenter", "SystemUIServer", "Spotlight", "StageStrip", "WindowManager"]
 
     init() {
@@ -41,6 +44,7 @@ final class WindowTracker {
             center.addObserver(self, selector: #selector(workspaceChanged), name: name, object: nil)
         }
         restoreSavedWindows()
+        loadPinned()
         refresh()
     }
 
@@ -99,6 +103,32 @@ final class WindowTracker {
                     "y": Double(frame.minY), "w": Double(frame.width), "h": Double(frame.height)]
         }
         UserDefaults.standard.set(records, forKey: parkedKey)
+    }
+
+    private func loadPinned() {
+        guard let records = UserDefaults.standard.array(forKey: pinnedKey) as? [[String: Int]] else { return }
+        for record in records {
+            if let id = record["windowID"], let slot = record["slot"], id > 0, slot >= 0 { pinned[CGWindowID(id)] = slot }
+        }
+    }
+
+    private func savePinned() {
+        let records = pinned.map { ["windowID": Int($0.key), "slot": $0.value] }
+        if records.isEmpty { UserDefaults.standard.removeObject(forKey: pinnedKey) }
+        else { UserDefaults.standard.set(records, forKey: pinnedKey) }
+    }
+
+    func isPinned(_ id: CGWindowID) -> Bool { pinned[id] != nil }
+
+    /// Pins the window to the slot its tile is in now, or lets it flow again.
+    func togglePin(_ id: CGWindowID, slot: Int) {
+        if pinned.removeValue(forKey: id) == nil {
+            // Another window pinned to the same slot gives way.
+            pinned = pinned.filter { $0.value != slot }
+            pinned[id] = slot
+        }
+        savePinned()
+        onChange?()
     }
 
     private func restoreSavedWindows() {
@@ -341,6 +371,9 @@ final class WindowTracker {
             everParked.remove(id)
         }
         if !closedParked.isEmpty { saveParked() }
+        let closedPinned = pinned.keys.filter { allWindows != nil && !liveIDs.contains($0) }
+        for id in closedPinned { pinned.removeValue(forKey: id) }
+        if !closedPinned.isEmpty { savePinned() }
 
         let mainTop = NSScreen.screens.first?.frame.maxY ?? 0
         for (id, item) in found where everParked.contains(id) && parked[id] == nil && !item.minimized {
@@ -418,12 +451,21 @@ final class WindowTracker {
 
     func recent(on screen: NSScreen) -> [WindowItem] {
         let topID = topOnScreen[DisplaySettings.key(for: screen)]
-        return ordered.compactMap { id in
-            guard id != frontID, (id != topID || parked[id] != nil),
-                  let item = windows[id], self.screen(for: item) == screen,
+        let shown = { (id: CGWindowID) -> WindowItem? in
+            guard id != self.frontID, (id != topID || self.parked[id] != nil),
+                  let item = self.windows[id], self.screen(for: item) == screen,
                   NSRunningApplication(processIdentifier: item.pid)?.isHidden != true else { return nil }
             return item
-        }.prefix(StripPanel.maxTiles).map { $0 }
+        }
+        let maxTiles = StripPanel.maxTiles
+        var items = ordered.filter { pinned[$0] == nil }.compactMap(shown)
+        // Pinned tiles go into their slots top-down; the recent ones fill the gaps around them.
+        let pinnedHere = pinned.compactMap { id, slot in shown(id).map { (item: $0, slot: slot) } }
+            .sorted { $0.slot < $1.slot }
+        for entry in pinnedHere {
+            items.insert(entry.item, at: min(entry.slot, items.count, max(maxTiles - 1, 0)))
+        }
+        return Array(items.prefix(maxTiles))
     }
 
     func item(for id: CGWindowID) -> WindowItem? { windows[id] }
