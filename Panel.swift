@@ -27,7 +27,7 @@ private final class StripItemView: NSView {
     private var hovering = false
     private var side: StripSide
     private var transformApplied = false
-    private static let pinSize: CGFloat = 22
+    private static let pinSize: CGFloat = 26
 
     init(item: WindowItem, image: NSImage?, showsCaption: Bool, side: StripSide,
          click: @escaping (CGWindowID) -> Void) {
@@ -69,7 +69,7 @@ private final class StripItemView: NSView {
     func setPinned(_ value: Bool) {
         guard value != pinned || pinLayer.contents == nil else { return }
         pinned = value
-        let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
             .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
         let symbol = NSImage(systemSymbolName: value ? "pin.fill" : "pin", accessibilityDescription: nil)?
             .withSymbolConfiguration(config)
@@ -279,8 +279,9 @@ private final class StripItemView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        // A little slack around the badge, so a near miss doesn't switch windows.
-        if let pinClick, pinRect.insetBy(dx: -4, dy: -4).contains(point) { pinClick(id) } else { click(id) }
+        // The whole top-left corner counts, so the badge needn't be hit exactly.
+        let hitArea = CGRect(x: 0, y: bounds.height - 44, width: 44, height: 44)
+        if let pinClick, hitArea.contains(point) { pinClick(id) } else { click(id) }
     }
 }
 
