@@ -85,7 +85,9 @@ private final class StripItemView: NSView {
     }
 
     private var pinRect: CGRect {
-        CGRect(x: 5, y: bounds.height - Self.pinSize - 5, width: Self.pinSize, height: Self.pinSize)
+        // The top corner facing the middle of the screen, away from the app icon.
+        CGRect(x: side == .left ? bounds.width - Self.pinSize - 5 : 5, y: bounds.height - Self.pinSize - 5,
+               width: Self.pinSize, height: Self.pinSize)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -228,6 +230,7 @@ private final class StripItemView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layoutIcon()
+        pinLayer.frame = pinRect
         layoutCaption()
         updateCaptionColor()
         CATransaction.commit()
@@ -268,8 +271,8 @@ private final class StripItemView: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        // The whole top-left corner counts, so the badge needn't be hit exactly.
-        let hitArea = CGRect(x: 0, y: bounds.height - 44, width: 44, height: 44)
+        // The whole corner around the badge counts, so it needn't be hit exactly.
+        let hitArea = CGRect(x: side == .left ? bounds.width - 44 : 0, y: bounds.height - 44, width: 44, height: 44)
         if let pinClick, hitArea.contains(point) { pinClick(id) } else { click(id) }
     }
 }
