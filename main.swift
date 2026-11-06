@@ -257,6 +257,7 @@ final class StageStripApp: NSObject, NSApplicationDelegate {
                 state.panel.setPresentation(exposed: expose,
                     visible: side != .off && !state.fullScreen && !state.items.isEmpty)
             }
+            state.panel.updateHover(point: mouse, enabled: shown && hovering)
             state.shown = shown
             state.exposed = expose
             panels[key] = state
