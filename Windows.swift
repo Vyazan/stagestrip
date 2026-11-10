@@ -28,6 +28,11 @@ final class WindowTracker {
     private var focusArmed = Set<CGWindowID>()
     private var pendingUnpark = Set<CGWindowID>()
     private var everParked = Set<CGWindowID>()
+    private var parkedBundles: [CGWindowID: String] = [:]
+    /// Pre-park frames of windows that closed while parked, by app: the app saved the off-screen
+    /// position and will reopen its next window there.
+    private var orphanFrames: [String: CGRect] = [:]
+    private let orphanKey = "orphanFrames"
     // A window we just brought forward; app activation lags, so trust it as the front for a moment.
     private var pendingFront: (id: CGWindowID, until: Date)?
     private let parkedKey = "parked"
@@ -43,6 +48,7 @@ final class WindowTracker {
                      NSWorkspace.didUnhideApplicationNotification] {
             center.addObserver(self, selector: #selector(workspaceChanged), name: name, object: nil)
         }
+        loadOrphans()
         restoreSavedWindows()
         loadPinned()
         refresh()
@@ -103,6 +109,19 @@ final class WindowTracker {
                     "y": Double(frame.minY), "w": Double(frame.width), "h": Double(frame.height)]
         }
         UserDefaults.standard.set(records, forKey: parkedKey)
+    }
+
+    private func loadOrphans() {
+        guard let records = UserDefaults.standard.dictionary(forKey: orphanKey) as? [String: [Double]] else { return }
+        for (bundle, v) in records where v.count == 4 {
+            orphanFrames[bundle] = CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
+        }
+    }
+
+    private func saveOrphans() {
+        let records = orphanFrames.mapValues { [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)] }
+        if records.isEmpty { UserDefaults.standard.removeObject(forKey: orphanKey) }
+        else { UserDefaults.standard.set(records, forKey: orphanKey) }
     }
 
     private func loadPinned() {
@@ -178,6 +197,7 @@ final class WindowTracker {
                            width: frame.width, height: frame.height)
         parked[id] = frame
         parkedPIDs[id] = pid
+        parkedBundles[id] = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
         saveParked()
         ordered.removeAll { $0 == id }
         ordered.insert(id, at: 0)
@@ -199,6 +219,7 @@ final class WindowTracker {
             guard self.setPosition(window, offscreen) else {
                 self.parked.removeValue(forKey: id)
                 self.parkedPIDs.removeValue(forKey: id)
+                self.parkedBundles.removeValue(forKey: id)
                 self.saveParked()
                 self.scheduleRefresh()
                 return
@@ -240,6 +261,7 @@ final class WindowTracker {
         pendingUnpark.remove(id)
         parked.removeValue(forKey: id)
         parkedPIDs.removeValue(forKey: id)
+        parkedBundles.removeValue(forKey: id)
         focusArmed.remove(id)
         saveParked()
         scheduleRefresh()
@@ -364,26 +386,35 @@ final class WindowTracker {
             return allWindows != nil && !liveIDs.contains(id)
         }
         for id in closedParked {
+            if let bundle = parkedBundles.removeValue(forKey: id), let frame = parked[id] {
+                orphanFrames[bundle] = frame
+            }
             parked.removeValue(forKey: id)
             parkedPIDs.removeValue(forKey: id)
             focusArmed.remove(id)
             pendingUnpark.remove(id)
             everParked.remove(id)
         }
-        if !closedParked.isEmpty { saveParked() }
+        if !closedParked.isEmpty { saveParked(); saveOrphans() }
         let closedPinned = pinned.keys.filter { allWindows != nil && !liveIDs.contains($0) }
         for id in closedPinned { pinned.removeValue(forKey: id) }
         if !closedPinned.isEmpty { savePinned() }
 
         let mainTop = NSScreen.screens.first?.frame.maxY ?? 0
-        for (id, item) in found where everParked.contains(id) && parked[id] == nil && !item.minimized {
-            let center = CGPoint(x: item.frame.midX, y: mainTop - item.frame.midY)
-            guard !NSScreen.screens.contains(where: { $0.frame.contains(center) }),
-                  let screen = NSScreen.screens.first, let ax = item.ax else { continue }
-            let point = CGPoint(x: screen.visibleFrame.minX + 40,
-                                y: mainTop - screen.visibleFrame.maxY + 40)
+        let onScreen = { (frame: CGRect) in
+            NSScreen.screens.contains { $0.frame.contains(CGPoint(x: frame.midX, y: mainTop - frame.midY)) }
+        }
+        // Lost former parked windows, and new windows an app reopened where we once parked its window.
+        for (id, item) in found where (everParked.contains(id) || windows[id] == nil)
+            && parked[id] == nil && !item.minimized && !onScreen(item.frame) {
+            guard let screen = NSScreen.screens.first, let ax = item.ax else { continue }
+            let bundle = NSRunningApplication(processIdentifier: item.pid)?.bundleIdentifier
+            let saved = bundle.flatMap { orphanFrames[$0] }.flatMap { onScreen($0) ? $0 : nil }
+            let point = saved?.origin ?? CGPoint(x: screen.visibleFrame.minX + 40,
+                                                 y: mainTop - screen.visibleFrame.maxY + 40)
             if setPosition(ax, point) {
                 everParked.remove(id)
+                if let bundle, orphanFrames.removeValue(forKey: bundle) != nil { saveOrphans() }
                 scheduleRefresh()
             }
         }
